@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 
+from intake import collect
 from source import inspect_bytes
 from sampledata import samples
 from storage import Archive
@@ -48,11 +49,22 @@ def main(argv=None):
     listing.add_argument('--database', required=True)
     fixtures = commands.add_parser('fixtures')
     fixtures.add_argument('directory')
+    index = commands.add_parser('index', description='按输出显示语义采集最终可见结果')
+    index.add_argument('path')
+    index.add_argument('--events', help='本地记录的 IOPub 事件 JSON；缺省只使用静态 nbformat 输出')
+    index.add_argument('--database', help='可选：把采集报告按笔记本摘要写入索引库')
+    index.add_argument('--source', help='写入索引库时的来源标识')
+    index.add_argument('--blobs', help='可选目录：把图片候选以摘要文件名落盘为引用')
+    index.add_argument('--preference', help='逗号分隔的 MIME 阅读偏好顺序覆盖')
+    commands.add_parser('intake-demo')
     commands.add_parser('demo')
     args = parser.parse_args(argv)
     try:
         if args.command == 'demo':
             result = demo()
+        elif args.command == 'intake-demo':
+            from demo import run_demo
+            result = run_demo()
         elif args.command == 'fixtures':
             destination = Path(args.directory)
             destination.mkdir(parents=True, exist_ok=True)
@@ -65,6 +77,26 @@ def main(argv=None):
         elif args.command == 'list':
             with Archive(args.database) as archive:
                 result = archive.list()
+        elif args.command == 'index':
+            raw = read_input(args.path)
+            events_raw = Path(args.events).read_bytes() if args.events else None
+            if len(events_raw or b'') > MAX_INPUT:
+                raise ValueError('事件输入超过接收限制')
+            preference = [item.strip() for item in args.preference.split(',')] \
+                if args.preference else None
+            if args.blobs:
+                Path(args.blobs).mkdir(parents=True, exist_ok=True)
+            result = collect(raw, events_raw, preference=preference,
+                             blobs_dir=args.blobs, notebook_name=Path(args.path).name,
+                             events_name=Path(args.events).name if args.events else None)
+            if args.database:
+                if not args.source:
+                    raise ValueError('写入索引库需要 --source')
+                with Archive(args.database) as archive:
+                    result = dict(index_id=archive.save_index(
+                        args.source, result, raw, events_raw,
+                        notebook_name=Path(args.path).name),
+                        status=result['status'], notebook_digest=result['notebook_digest'])
         else:
             raw = read_input(args.path)
             rows = inspect_bytes(raw)
